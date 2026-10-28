@@ -26,7 +26,7 @@ from metadata.placement import NODE_URLS, create_ring
 from metadata.chunking import CHUNK_SIZE
 from fastapi.responses import HTMLResponse
 from sqlalchemy import func
-
+from gateway.security import require_api_key
 app = FastAPI(
     title="Distributed Object Storage Gateway",
     version="1.0.0"
@@ -80,7 +80,7 @@ def home():
     }
 
 
-@app.post("/objects")
+@app.post("/objects", dependencies=[Depends(require_api_key)])
 def upload_object(
     file: UploadFile = File(...),
     db: Session = Depends(get_db)
@@ -308,7 +308,7 @@ def download_object(
     )
 
 
-@app.delete("/objects/{object_id}")
+@app.delete("/objects/{object_id}", dependencies=[Depends(require_api_key)])
 def delete_object(
     object_id: int,
     db: Session = Depends(get_db)

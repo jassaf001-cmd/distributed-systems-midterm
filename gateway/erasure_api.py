@@ -3,7 +3,7 @@ import hashlib
 import os
 import tempfile
 from pathlib import Path
-
+from gateway.security import require_api_key
 import requests
 from fastapi import (
     APIRouter,
@@ -84,7 +84,7 @@ def load_object(db, object_id):
     return obj
 
 
-@router.post("/objects")
+@router.post("/objects", dependencies=[Depends(require_api_key)])
 def upload_erasure_object(
     file: UploadFile = File(...),
     db: Session = Depends(get_db)
