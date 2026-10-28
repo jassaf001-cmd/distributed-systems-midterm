@@ -24,7 +24,8 @@ from metadata.models import (
 )
 from metadata.placement import NODE_URLS, create_ring
 from metadata.chunking import CHUNK_SIZE
-
+from fastapi.responses import HTMLResponse
+from sqlalchemy import func
 
 app = FastAPI(
     title="Distributed Object Storage Gateway",
@@ -396,3 +397,225 @@ def cluster_health():
             }
 
     return result
+
+
+@app.get("/search")
+def search_objects(
+    q: str = "",
+    db: Session = Depends(get_db)
+):
+    statement = select(StoredObject)
+
+    if q:
+        statement = statement.where(
+            StoredObject.filename.ilike(f"%{q}%")
+        )
+
+    objects = db.scalars(statement).all()
+
+    return [
+        {
+            "id": obj.id,
+            "filename": obj.filename,
+            "size": obj.size,
+            "file_hash": obj.file_hash
+        }
+        for obj in objects
+    ]
+
+
+@app.get("/stats")
+def storage_stats(db: Session = Depends(get_db)):
+    object_count = db.scalar(
+        select(func.count()).select_from(StoredObject)
+    )
+
+    chunk_count = db.scalar(
+        select(func.count()).select_from(Chunk)
+    )
+
+    total_bytes = db.scalar(
+        select(func.coalesce(func.sum(StoredObject.size), 0))
+    )
+
+    replica_count = db.scalar(
+        select(func.count()).select_from(ChunkReplica)
+    )
+
+    return {
+        "objects": object_count,
+        "unique_chunks": chunk_count,
+        "logical_bytes": total_bytes,
+        "replicas": replica_count,
+        "configured_nodes": len(NODE_URLS)
+    }
+
+
+@app.get("/dashboard", response_class=HTMLResponse)
+def dashboard():
+    return """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Distributed Storage Dashboard</title>
+        <style>
+            body {
+                background: #0f172a;
+                color: #f8fafc;
+                font-family: Arial, sans-serif;
+                margin: 40px;
+            }
+            h1 { color: #38bdf8; }
+            section {
+                background: #1e293b;
+                padding: 20px;
+                border-radius: 10px;
+                margin-bottom: 20px;
+            }
+            button, input {
+                padding: 10px;
+                margin: 5px;
+            }
+            button {
+                background: #0284c7;
+                color: white;
+                border: none;
+                cursor: pointer;
+            }
+            pre {
+                white-space: pre-wrap;
+                overflow-wrap: anywhere;
+            }
+        </style>
+    </head>
+    <body>
+        <h1>Distributed Object Storage</h1>
+
+        <section>
+            <h2>Cluster Health</h2>
+            <button onclick="refresh()">Refresh</button>
+            <pre id="health"></pre>
+        </section>
+
+        <section>
+            <h2>Storage Statistics</h2>
+            <pre id="stats"></pre>
+        </section>
+
+        <section>
+            <h2>Upload File</h2>
+            <input type="file" id="file">
+            <button onclick="upload()">Upload</button>
+            <pre id="result"></pre>
+        </section>
+
+        <section>
+            <h2>Search Objects</h2>
+            <input id="query" placeholder="Filename">
+            <button onclick="search()">Search</button>
+            <pre id="objects"></pre>
+        </section>
+
+        <script>
+            async function fetchJSON(url, options) {
+                const response = await fetch(url, options);
+                const data = await response.json();
+                if (!response.ok)
+                    throw new Error(JSON.stringify(data));
+                return data;
+            }
+
+            async function refresh() {
+                try {
+                    const [health, stats] = await Promise.all([
+                        fetchJSON('/cluster/health'),
+                        fetchJSON('/stats')
+                    ]);
+
+                    document.getElementById('health').textContent =
+                        JSON.stringify(health, null, 2);
+
+                    document.getElementById('stats').textContent =
+                        JSON.stringify(stats, null, 2);
+                } catch (error) {
+                    document.getElementById('health').textContent =
+                        error.message;
+                }
+            }
+
+            async function upload() {
+                const file = document.getElementById('file').files[0];
+                if (!file) return alert('Choose a file first');
+
+                const form = new FormData();
+                form.append('file', file);
+
+                try {
+                    const result = await fetchJSON('/objects', {
+                        method: 'POST',
+                        body: form
+                    });
+
+                    document.getElementById('result').textContent =
+                        JSON.stringify(result, null, 2);
+                    await refresh();
+                    await search();
+                } catch (error) {
+                    document.getElementById('result').textContent =
+                        error.message;
+                }
+            }
+
+            async function search() {
+                try {
+                    const q = document.getElementById('query').value;
+                    const objects = await fetchJSON(
+                        '/search?q=' + encodeURIComponent(q)
+                    );
+
+                    const container = document.getElementById('objects');
+                    container.replaceChildren();
+
+                    for (const obj of objects) {
+                        const row = document.createElement('div');
+                        row.style.marginBottom = '10px';
+
+                        const name = document.createElement('span');
+                        name.textContent = obj.filename + ' ';
+
+                        const download = document.createElement('button');
+                        download.textContent = 'Download';
+                        download.onclick = () => {
+                            window.location.href = '/objects/' + obj.id;
+                        };
+
+                        const remove = document.createElement('button');
+                        remove.textContent = 'Delete';
+                        remove.onclick = async () => {
+                            if (!confirm('Delete this object?')) return;
+                            try {
+                                await fetchJSON('/objects/' + obj.id, {
+                                    method: 'DELETE'
+                                });
+                                await refresh();
+                                await search();
+                            } catch (error) {
+                                alert(error.message);
+                            }
+                        };
+
+                        row.append(name, download, remove);
+                        container.appendChild(row);
+                    }
+                } catch (error) {
+                    document.getElementById('objects').textContent =
+                        error.message;
+                }
+            }
+
+            refresh();
+            search();
+        </script>
+    </body>
+    </html>
+    """
