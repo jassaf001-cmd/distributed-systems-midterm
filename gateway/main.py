@@ -2,7 +2,7 @@
 import hashlib
 from collections import Counter
 from urllib.parse import quote
-
+from gateway.quorum import quorum_write, QuorumError
 import requests
 from fastapi import (
     Depends,
@@ -34,40 +34,24 @@ app = FastAPI(
 app.include_router(erasure_router)
 ring = create_ring()
 REPLICA_COUNT = 3
+WRITE_QUORUM = 2
+READ_QUORUM = 2
 REQUEST_TIMEOUT = 15
 
 
+
 def store_replicas(chunk_hash: str, data: bytes):
-    """Upload one chunk to three distinct nodes."""
-    node_ids = ring.get_nodes(
-        chunk_hash,
-        REPLICA_COUNT
-    )
+    try:
+        result = quorum_write(chunk_hash, data)
 
-    stored_nodes = []
+        return result["successful_nodes"]
 
-    for node_id in node_ids:
-        url = f"{NODE_URLS[node_id]}/chunks/{chunk_hash}"
+    except QuorumError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=str(exc)
+        )
 
-        try:
-            response = requests.put(
-                url,
-                data=data,
-                headers={
-                    "Content-Type": "application/octet-stream"
-                },
-                timeout=REQUEST_TIMEOUT
-            )
-            response.raise_for_status()
-            stored_nodes.append(node_id)
-
-        except requests.RequestException as exc:
-            raise HTTPException(
-                status_code=503,
-                detail=f"Replica upload failed on {node_id}: {exc}"
-            )
-
-    return stored_nodes
 
 
 @app.get("/")
